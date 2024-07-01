@@ -1,0 +1,247 @@
+package com.example.navic_irnss;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.content.pm.PackageManager;
+import android.location.GnssStatus;
+import android.location.Location;
+import android.location.LocationManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.util.Log;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import com.google.android.gms.common.api.ResolvableApiException;
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.LocationSettingsRequest;
+import com.google.android.gms.location.LocationSettingsResponse;
+import com.google.android.gms.location.SettingsClient;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
+
+public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = "FusedLocationExample";
+    private static final int REQUEST_LOCATION_PERMISSION = 1;
+    private static final int REQUEST_CHECK_SETTINGS = 2;
+
+    private FusedLocationProviderClient fusedLocationClient;
+    private LocationRequest locationRequest;
+    private LocationCallback locationCallback;
+    private TextView locationTextView;
+    private TextView navicStatusTextView;
+
+    private GnssStatus.Callback gnssStatusCallback; // Declare GnssStatus.Callback instance
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        locationTextView = findViewById(R.id.locationTextView);
+        navicStatusTextView = findViewById(R.id.navicStatusTextView);
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+
+        // Check location permissions
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            // Request the permission
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQUEST_LOCATION_PERMISSION);
+        } else {
+            // Permission already granted, continue
+            createLocationRequest();
+        }
+
+        // Create location callback
+        locationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(@NonNull LocationResult locationResult) {
+                super.onLocationResult(locationResult);
+                Location location = locationResult.getLastLocation();
+                if (location != null) {
+                    Log.d(TAG, "Fused Location: " + location.getLatitude() + ", " + location.getLongitude());
+                    updateLocationUI(location);
+                }
+            }
+        };
+
+        // Initialize GNSS status callback
+        gnssStatusCallback = new GnssStatus.Callback() {
+            @Override
+            public void onStarted() {
+                super.onStarted();
+            }
+
+            @Override
+            public void onStopped() {
+                super.onStopped();
+            }
+
+            @Override
+            public void onFirstFix(int ttffMillis) {
+                super.onFirstFix(ttffMillis);
+            }
+
+            @Override
+            public void onSatelliteStatusChanged(GnssStatus status) {
+                super.onSatelliteStatusChanged(status);
+                // Check GNSS satellite constellation
+                boolean navicSupport = false;
+                StringBuilder statusText = new StringBuilder();
+                int satelliteCount = status.getSatelliteCount();
+                for (int i = 0; i < satelliteCount; i++) {
+                    int constellationType = status.getConstellationType(i);
+                    if (constellationType == GnssStatus.CONSTELLATION_IRNSS) {
+                        // NavIC (IRNSS) satellite found
+                        navicSupport = true;
+                    }
+                    // Append status information (for debugging)
+                    statusText.append("Satellite ").append(i + 1).append(": ").append(getConstellationName(constellationType)).append("\n");
+                }
+                // Update UI with NavIC status
+                updateNavicStatusUI(navicSupport);
+                // For debugging purposes, you can log the complete GNSS status
+                Log.d(TAG, "GNSS Status:\n" + statusText.toString());
+            }
+        };
+
+        // Register GNSS status callback
+        LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (locationManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            locationManager.registerGnssStatusCallback(gnssStatusCallback);
+        }
+    }
+
+    private String getConstellationName(int constellationType) {
+        switch (constellationType) {
+            case GnssStatus.CONSTELLATION_GPS:
+                return "GPS";
+            case GnssStatus.CONSTELLATION_GLONASS:
+                return "GLONASS";
+            case GnssStatus.CONSTELLATION_BEIDOU:
+                return "Beidou";
+            case GnssStatus.CONSTELLATION_GALILEO:
+                return "Galileo";
+            case GnssStatus.CONSTELLATION_QZSS:
+                return "QZSS";
+            case GnssStatus.CONSTELLATION_SBAS:
+                return "NavIC";
+            default:
+                return "Unknown";
+        }
+    }
+
+    private void createLocationRequest() {
+        locationRequest = new LocationRequest();
+        locationRequest.setInterval(10000); // Update interval in milliseconds
+        locationRequest.setFastestInterval(5000); // Fastest update interval in milliseconds
+        locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY); // Use GPS for highest accuracy
+        locationRequest.setMaxWaitTime(10000); // Maximum wait time for location updates
+
+        LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder()
+                .addLocationRequest(locationRequest);
+
+        SettingsClient client = LocationServices.getSettingsClient(this);
+        Task<LocationSettingsResponse> task = client.checkLocationSettings(builder.build());
+
+        task.addOnSuccessListener(this, new OnSuccessListener<LocationSettingsResponse>() {
+            @Override
+            public void onSuccess(LocationSettingsResponse locationSettingsResponse) {
+                // All location settings are satisfied, start location updates
+                startLocationUpdates();
+            }
+        });
+
+        task.addOnFailureListener(this, new OnFailureListener() {
+            @Override
+            public void onFailure(@NonNull Exception e) {
+                if (e instanceof ResolvableApiException) {
+                    // Location settings are not satisfied, but this can be fixed by showing the user a dialog.
+                    try {
+                        // Show the dialog by calling startResolutionForResult(),
+                        // and check the result in onActivityResult().
+                        ResolvableApiException resolvable = (ResolvableApiException) e;
+                        resolvable.startResolutionForResult(MainActivity.this,
+                                REQUEST_CHECK_SETTINGS);
+                    } catch (Exception sendEx) {
+                        // Ignore the error.
+                    }
+                }
+            }
+        });
+    }
+
+    @SuppressLint("MissingPermission")
+    private void startLocationUpdates() {
+        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, null);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Resume location updates
+        startLocationUpdates();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Pause location updates
+        stopLocationUpdates();
+    }
+
+    private void stopLocationUpdates() {
+        fusedLocationClient.removeLocationUpdates(locationCallback);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_LOCATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, continue
+                createLocationRequest();
+            } else {
+                // Permission denied, handle accordingly (e.g., show a message or disable functionality)
+                Toast.makeText(this, "Location permission denied", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private void updateLocationUI(Location location) {
+        if (location != null) {
+            locationTextView.setText("Latitude: " + location.getLatitude() + "\nLongitude: " + location.getLongitude()
+                    + "\nAccuracy: " + location.getAccuracy() + " meters");
+        }
+    }
+
+    private void updateNavicStatusUI(boolean navicSupport) {
+        if (navicSupport) {
+            navicStatusTextView.setText("NavIC (IRNSS) support: Yes");
+        } else {
+            navicStatusTextView.setText("NavIC (IRNSS) support: No");
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Unregister GNSS status callback
+        LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (locationManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            locationManager.unregisterGnssStatusCallback(gnssStatusCallback);
+        }
+    }
+}

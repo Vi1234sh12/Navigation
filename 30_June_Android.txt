@@ -1,0 +1,221 @@
+package com.example.navic_irnss;
+
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.os.Environment;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.osmdroid.config.Configuration;
+import org.osmdroid.util.GeoPoint;
+import org.osmdroid.views.MapView;
+import org.osmdroid.views.overlay.Polygon;
+import org.osmdroid.views.overlay.Polyline;
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider;
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = MainActivity.class.getSimpleName();
+    private static final int REQUEST_LOCATION_PERMISSION = 1;
+
+    private MapView mapView;
+    private MyLocationNewOverlay myLocationOverlay;
+    private Polyline trackingPolyline;
+    private boolean isTracking = false;
+    private List<GeoPoint> trackPoints = new ArrayList<>();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        // Initialize osmdroid configuration
+        Configuration.getInstance().load(getApplicationContext(),
+                getSharedPreferences("osmdroid", MODE_PRIVATE));
+
+        // Initialize map view
+        mapView = findViewById(R.id.mapView);
+        mapView.setBuiltInZoomControls(true);
+        mapView.setMultiTouchControls(true);
+
+        // Initialize location overlay
+        myLocationOverlay = new MyLocationNewOverlay(new GpsMyLocationProvider(this), mapView);
+        myLocationOverlay.enableMyLocation();
+        mapView.getOverlays().add(myLocationOverlay);
+
+        // Start tracking button
+        Button startButton = findViewById(R.id.startButton);
+        startButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (isTracking) {
+                    Toast.makeText(MainActivity.this, "Tracking already started!", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
+                // Check location permissions
+                if (ContextCompat.checkSelfPermission(MainActivity.this,
+                        Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(MainActivity.this,
+                            new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                            REQUEST_LOCATION_PERMISSION);
+                    return;
+                }
+
+                // Start tracking
+                startTracking();
+            }
+        });
+
+        // Stop tracking button
+        Button stopButton = findViewById(R.id.stopButton);
+        stopButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!isTracking) {
+                    Toast.makeText(MainActivity.this, "Tracking not started!", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
+                // Stop tracking
+                stopTracking();
+            }
+        });
+
+        // Request location permissions if not granted
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQUEST_LOCATION_PERMISSION);
+        }
+    }
+
+    private void startTracking() {
+        isTracking = true;
+        trackPoints.clear();
+        trackingPolyline = new Polyline(mapView);
+        mapView.getOverlayManager().add(trackingPolyline);
+        Toast.makeText(this, "Tracking started", Toast.LENGTH_SHORT).show();
+    }
+
+    private void stopTracking() {
+        isTracking = false;
+        mapView.getOverlayManager().remove(trackingPolyline);
+        saveGeoJson(trackPoints);
+        Toast.makeText(this, "Tracking stopped", Toast.LENGTH_SHORT).show();
+    }
+
+    private void saveGeoJson(List<GeoPoint> points) {
+        // Create GeoJSON object
+        JSONObject geoJson = new JSONObject();
+        try {
+            geoJson.put("type", "FeatureCollection");
+            JSONArray features = new JSONArray();
+
+            // Create feature (LineString)
+            JSONObject feature = new JSONObject();
+            feature.put("type", "Feature");
+            JSONObject geometry = new JSONObject();
+            geometry.put("type", "LineString");
+
+            JSONArray coordinates = new JSONArray();
+            for (GeoPoint point : points) {
+                JSONArray pointArray = new JSONArray();
+                pointArray.put(point.getLongitude());
+                pointArray.put(point.getLatitude());
+                coordinates.put(pointArray);
+            }
+            geometry.put("coordinates", coordinates);
+            feature.put("geometry", geometry);
+            features.put(feature);
+
+            geoJson.put("features", features);
+
+            // Save to file
+            saveToFile(geoJson.toString());
+
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating GeoJSON", e);
+        }
+    }
+
+    private void saveToFile(String content) {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault());
+        String currentDateAndTime = sdf.format(new Date());
+        String fileName = "track_" + currentDateAndTime + ".geojson";
+
+        File root = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS), "TrackLogs");
+
+        if (!root.exists()) {
+            root.mkdirs();
+        }
+
+        File file = new File(root, fileName);
+
+        try {
+            FileWriter writer = new FileWriter(file);
+            writer.write(content);
+            writer.flush();
+            writer.close();
+            Toast.makeText(this, "GeoJSON saved: " + file.getAbsolutePath(), Toast.LENGTH_LONG).show();
+        } catch (IOException e) {
+            Log.e(TAG, "Error writing GeoJSON to file", e);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_LOCATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, start tracking
+                startTracking();
+            } else {
+                Toast.makeText(this, "Location permission denied", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        mapView.onResume();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mapView.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mapView.onDetach();
+    }
+}
